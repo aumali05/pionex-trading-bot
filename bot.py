@@ -1,143 +1,136 @@
-# =============================================
-# BTC/USDT 1H RSI Divergence Bot (Pionex only)
-# Futures 15x Leverage, Simulate Mode, WIN/LOSS Tracking
-# =============================================
+# -------------------------
+# Install dependencies only if needed
+# -------------------------
+# !pip install pandas numpy requests ccxt --quiet
 
+# -------------------------
+# Imports
+# -------------------------
+import requests
+import pandas as pd
+import numpy as np
+import time
+from datetime import datetime
 import ccxt
 import os
-import time
-import pandas as pd
-from datetime import datetime
 
-# -----------------------------
-# Configuration
-# -----------------------------
-simulate_only = True       # True = only simulate, False = live trades
-market_type = 'futures'    # 'spot' or 'futures'
+# -------------------------
+# User Settings
+# -------------------------
+slPercent = 1.5
+tpPercent = 3.0
+lookback = 5
+rsi_period = 14
+rsi_lookback = 5
 symbol = 'BTC/USDT'
-trade_amount = 100         # USD per trade
-desired_leverage = 15      # 15x leverage
-sl_percent = 1.5           # stop loss %
-tp_percent = 3.0           # take profit %
-rsi_length = 14
-rsi_oversold = 30
-lookback_period = 5
+trade_amount = 0.001
+simulate_only = True  # Set False to place real trades
 
-# -----------------------------
-# Connect to Pionex via CCXT
-# -----------------------------
+# -------------------------
+# Pionex API from environment variables
+# -------------------------
 api_key = os.environ.get('PIONEX_API_KEY')
 api_secret = os.environ.get('PIONEX_API_SECRET')
 
-pionex = ccxt.pionex({
+pionex = ccxt.binance({
     'apiKey': api_key,
     'secret': api_secret,
-    'enableRateLimit': True
+    'enableRateLimit': True,
 })
 
-# -----------------------------
-# Futures setup (hardcoded leverage)
-# -----------------------------
-if market_type == 'futures':
-    leverage = desired_leverage  # 15x
-    print(f"[INFO] Futures trading mode. Using leverage: {leverage}")
-else:
-    leverage = 1
-    print("[INFO] Spot trading mode. Leverage ignored.")
+# -------------------------
+# Track executed signals
+# -------------------------
+executed_signals = set()
 
-# -----------------------------
-# Store open trades
-# -----------------------------
-open_trades = []
-
-# -----------------------------
-# Fetch OHLCV candles from Pionex
-# -----------------------------
-def fetch_candles():
-    timeframe = '1h'
-    limit = 180
-    ohlcv = pionex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-    data = pd.DataFrame(ohlcv, columns=['Time','Open','High','Low','Close','Volume'])
-    data['Time'] = pd.to_datetime(data['Time'], unit='ms')
-    return data
-
-# -----------------------------
-# Compute RSI
-# -----------------------------
-def compute_rsi(series, period):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+# -------------------------
+# RSI function
+# -------------------------
+def compute_rsi(close, period=rsi_period):
+    close = np.array(close)
+    deltas = np.diff(close)
+    seed = deltas[:period]
+    up = seed[seed >= 0].sum() / period
+    down = -seed[seed < 0].sum() / period
+    rs = up / down if down != 0 else 0
+    rsi = np.zeros_like(close)
+    rsi[:period] = 50
+    for i in range(period, len(close)):
+        delta = deltas[i - 1]
+        upval = max(delta, 0)
+        downval = -min(delta, 0)
+        up = (up * (period - 1) + upval) / period
+        down = (down * (period - 1) + downval) / period
+        rs = up / down if down != 0 else 0
+        rsi[i] = 100 - 100 / (1 + rs)
     return rsi
 
-# -----------------------------
-# Main bot loop
-# -----------------------------
+# -------------------------
+# Main loop: fetch candles, detect signals, execute
+# -------------------------
 while True:
     try:
-        candles = fetch_candles()
-        candles['RSI'] = compute_rsi(candles['Close'], rsi_length)
+        # Fetch latest 30 days candles from CoinGecko
+        url = "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc"
+        params = {"vs_currency": "usd", "days": "30"}
+        response = requests.get(url, params=params)
+        data = response.json()
+        df = pd.DataFrame(data, columns=["Time", "Open", "High", "Low", "Close"])
+        df["Time"] = pd.to_datetime(df["Time"], unit='ms')
+        for col in ["Open", "High", "Low", "Close"]:
+            df[col] = df[col].astype(float)
 
-        # -----------------------------
-        # Check for bullish RSI divergence
-        # -----------------------------
-        last_pivot_low_price = candles['Low'].rolling(lookback_period*2+1, center=True).min()
-        last_pivot_low_rsi = candles['RSI'].rolling(lookback_period*2+1, center=True).min()
-        
-        latest = candles.iloc[-1]
-        prev = candles.iloc[-(lookback_period+1)]
+        # Compute RSI
+        df["RSI"] = compute_rsi(df["Close"])
 
-        bullish_divergence = False
-        if prev['Low'] < last_pivot_low_price.iloc[-(lookback_period+1)] and prev['RSI'] > last_pivot_low_rsi.iloc[-(lookback_period+1)]:
-            bullish_divergence = True
+        # Detect pivot lows
+        pivot_lows = []
+        for i in range(lookback, len(df) - lookback):
+            window = df["Low"].iloc[i - lookback:i + lookback + 1]
+            if df["Low"].iloc[i] == min(window):
+                pivot_lows.append(i)
 
-        # -----------------------------
-        # Entry condition
-        # -----------------------------
-        if bullish_divergence and latest['RSI'] < rsi_oversold:
-            entry_price = latest['Close']
-            stop_loss = entry_price * (1 - sl_percent/100)
-            take_profit = entry_price * (1 + tp_percent/100)
-            trade = {
-                'type': 'BUY',
-                'Entry': entry_price,
-                'SL': stop_loss,
-                'TP': take_profit,
-                'Time': latest['Time']
-            }
-            open_trades.append(trade)
+        # Detect bullish divergence
+        signals = []
+        for idx in pivot_lows:
+            if idx < rsi_lookback:
+                continue
+            prev_idx = pivot_lows[pivot_lows.index(idx) - 1] if pivot_lows.index(idx) > 0 else None
+            if prev_idx is None:
+                continue
+            price_low_now = df["Low"].iloc[idx]
+            price_low_prev = df["Low"].iloc[prev_idx]
+            rsi_now = df["RSI"].iloc[idx]
+            rsi_prev = df["RSI"].iloc[prev_idx]
+            if price_low_now < price_low_prev and rsi_now > rsi_prev and rsi_now < 30:
+                entry_price = df["Close"].iloc[idx]
+                stop_loss = entry_price * (1 - slPercent / 100)
+                take_profit = entry_price * (1 + tpPercent / 100)
+                signal_id = df["Time"].iloc[idx]
+                signals.append({
+                    "id": signal_id,
+                    "Time": df["Time"].iloc[idx],
+                    "Entry": entry_price,
+                    "StopLoss": round(stop_loss, 2),
+                    "TakeProfit": round(take_profit, 2),
+                    "RSI": round(rsi_now, 2)
+                })
 
-            if simulate_only:
-                print(f"Simulated BUY order: Entry={entry_price}, SL={stop_loss}, TP={take_profit} at {latest['Time']}")
-            else:
-                # Real Pionex order
-                quantity = trade_amount / entry_price  # USD -> contracts
-                pionex.create_market_buy_order(symbol, quantity)
-                print(f"[LIVE] BUY order sent: Entry={entry_price}, SL={stop_loss}, TP={take_profit} at {latest['Time']}")
+        # Execute Signals
+        for s in signals:
+            if s['id'] not in executed_signals:
+                executed_signals.add(s['id'])
+                if simulate_only:
+                    print(f"Simulated BUY order: Entry={s['Entry']}, SL={s['StopLoss']}, TP={s['TakeProfit']} at {s['Time']}")
+                else:
+                    order = pionex.create_market_buy_order(symbol, trade_amount)
+                    print("Market buy order placed:", order)
 
-        # -----------------------------
-        # Check open trades for TP/SL hit
-        # -----------------------------
-        to_remove = []
-        for t in open_trades:
-            if t['type'] == 'BUY':
-                if latest['High'] >= t['TP']:
-                    print(f"Result: BUY WIN! Entry={t['Entry']}, TP hit={t['TP']}, Time={latest['Time']}")
-                    to_remove.append(t)
-                elif latest['Low'] <= t['SL']:
-                    print(f"Result: BUY LOSS! Entry={t['Entry']}, SL hit={t['SL']}, Time={latest['Time']}")
-                    to_remove.append(t)
-        for t in to_remove:
-            open_trades.remove(t)
-
-        # Wait until next 1H candle
+        # Wait 1 hour before next check
         print(f"Waiting 1 hour... ({datetime.now()})")
         time.sleep(3600)
 
     except Exception as e:
-        print(f"[ERROR] {e}")
-        time.sleep(60)
+        print("Error occurred:", e)
+        print("Retrying in 5 minutes...")
+        time.sleep(300)
