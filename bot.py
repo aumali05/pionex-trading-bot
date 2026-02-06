@@ -1,5 +1,5 @@
 # =============================================
-# BTC/USDT 1H RSI Divergence Bot (Railway-ready)
+# BTC/USDT 1H RSI Divergence Bot (Pionex only)
 # Futures 15x Leverage, Simulate Mode, WIN/LOSS Tracking
 # =============================================
 
@@ -29,7 +29,7 @@ lookback_period = 5
 api_key = os.environ.get('PIONEX_API_KEY')
 api_secret = os.environ.get('PIONEX_API_SECRET')
 
-pionex = ccxt.binance({
+pionex = ccxt.pionex({
     'apiKey': api_key,
     'secret': api_secret,
     'enableRateLimit': True
@@ -51,12 +51,11 @@ else:
 open_trades = []
 
 # -----------------------------
-# Fetch OHLCV candles
+# Fetch OHLCV candles from Pionex
 # -----------------------------
 def fetch_candles():
     timeframe = '1h'
     limit = 180
-    # Works for both spot and futures on Pionex
     ohlcv = pionex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     data = pd.DataFrame(ohlcv, columns=['Time','Open','High','Low','Close','Volume'])
     data['Time'] = pd.to_datetime(data['Time'], unit='ms')
