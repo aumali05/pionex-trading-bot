@@ -1,6 +1,6 @@
 # =============================================
 # BTC/USDT 1H RSI Divergence Bot (Railway-ready)
-# Futures Version with 15x Leverage
+# Futures 15x Leverage, Simulate Mode, WIN/LOSS Tracking
 # =============================================
 
 import ccxt
@@ -36,7 +36,7 @@ pionex = ccxt.binance({
 })
 
 # -----------------------------
-# Check max leverage if futures
+# Futures setup (hardcoded leverage)
 # -----------------------------
 if market_type == 'futures':
     leverage = desired_leverage  # 15x
@@ -44,27 +44,26 @@ if market_type == 'futures':
 else:
     leverage = 1
     print("[INFO] Spot trading mode. Leverage ignored.")
+
 # -----------------------------
 # Store open trades
 # -----------------------------
 open_trades = []
 
 # -----------------------------
-# Function to fetch last 5 1H candles
+# Fetch OHLCV candles
 # -----------------------------
 def fetch_candles():
     timeframe = '1h'
     limit = 180
-    if market_type == 'spot':
-        ohlcv = pionex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-    else:  # futures
-        ohlcv = pionex.fapiPublic_get_klines({'symbol': symbol.replace('/', ''), 'interval': timeframe, 'limit': limit})
+    # Works for both spot and futures on Pionex
+    ohlcv = pionex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     data = pd.DataFrame(ohlcv, columns=['Time','Open','High','Low','Close','Volume'])
     data['Time'] = pd.to_datetime(data['Time'], unit='ms')
     return data
 
 # -----------------------------
-# Function to calculate RSI
+# Compute RSI
 # -----------------------------
 def compute_rsi(series, period):
     delta = series.diff()
@@ -84,11 +83,12 @@ while True:
         candles = fetch_candles()
         candles['RSI'] = compute_rsi(candles['Close'], rsi_length)
 
-        # Check for signals (Bullish RSI Divergence)
+        # -----------------------------
+        # Check for bullish RSI divergence
+        # -----------------------------
         last_pivot_low_price = candles['Low'].rolling(lookback_period*2+1, center=True).min()
         last_pivot_low_rsi = candles['RSI'].rolling(lookback_period*2+1, center=True).min()
         
-        # Simplified: check last candle only
         latest = candles.iloc[-1]
         prev = candles.iloc[-(lookback_period+1)]
 
@@ -96,7 +96,9 @@ while True:
         if prev['Low'] < last_pivot_low_price.iloc[-(lookback_period+1)] and prev['RSI'] > last_pivot_low_rsi.iloc[-(lookback_period+1)]:
             bullish_divergence = True
 
+        # -----------------------------
         # Entry condition
+        # -----------------------------
         if bullish_divergence and latest['RSI'] < rsi_oversold:
             entry_price = latest['Close']
             stop_loss = entry_price * (1 - sl_percent/100)
@@ -140,5 +142,3 @@ while True:
     except Exception as e:
         print(f"[ERROR] {e}")
         time.sleep(60)
-
-
