@@ -39,21 +39,11 @@ pionex = ccxt.binance({
 # Check max leverage if futures
 # -----------------------------
 if market_type == 'futures':
-    markets = pionex.fapiPublic_get_exchangeinfo()
-    btc_info = next(m for m in markets['symbols'] if m['symbol'] == 'BTCUSDT')
-    max_allowed_leverage = btc_info['maxLeverage']
-    leverage = min(desired_leverage, max_allowed_leverage)
-    # Set leverage on Pionex
-    pionex.fapiPrivate_post_leverage({
-        'symbol': symbol.replace('/', ''),
-        'leverage': leverage
-    })
-    print(f"[INFO] Futures trading mode")
-    print(f"[INFO] Max allowed leverage: {max_allowed_leverage}, Using leverage: {leverage}")
+    leverage = desired_leverage  # 15x
+    print(f"[INFO] Futures trading mode. Using leverage: {leverage}")
 else:
     leverage = 1
     print("[INFO] Spot trading mode. Leverage ignored.")
-
 # -----------------------------
 # Store open trades
 # -----------------------------
@@ -150,4 +140,5 @@ while True:
     except Exception as e:
         print(f"[ERROR] {e}")
         time.sleep(60)
+
 
